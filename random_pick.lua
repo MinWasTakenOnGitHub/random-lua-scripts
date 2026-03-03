@@ -266,6 +266,7 @@ function Numberlink.solve(grid)
         end
         board[np] = 0
         return false
+        return ok
       end
     end
 
