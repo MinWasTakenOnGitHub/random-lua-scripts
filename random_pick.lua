@@ -233,10 +233,13 @@ function Numberlink.solve(grid)
         connected_count = connected_count + 1
 
         local ok = search()
+        if ok then
+          return true
+        end
 
         connected[label] = false
         connected_count = connected_count - 1
-        return ok
+        return false
       else
         board[np] = label
         if best_side == 1 then
@@ -252,12 +255,17 @@ function Numberlink.solve(grid)
           ok = search()
         end
 
+        if ok then
+          return true
+        end
+
         if best_side == 1 then
           endpoints_a[label] = e1
         else
           endpoints_b[label] = e1
         end
         board[np] = 0
+        return false
         return ok
       end
     end
