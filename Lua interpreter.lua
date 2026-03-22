@@ -835,6 +835,18 @@ function VM:set_results(frame, base, results, count_field)
   end
 end
 
+function VM:do_conditional_jump(frame, cond, expected)
+  if cond ~= expected then
+    frame.pc = frame.pc + 1
+    return
+  end
+  local jump = frame.proto.code[frame.pc]
+  if not jump or jump.name ~= "JMP" then
+    error("conditional opcode must be followed by JMP")
+  end
+  frame.pc = frame.pc + 1 + jump.sj
+end
+
 function VM:execute(closure, ...)
   local args = pack(...)
   local proto = closure.proto
@@ -1083,64 +1095,48 @@ function VM:execute(closure, ...)
       frame.to_close[#frame.to_close + 1] = { index = a, value = r[a] }
 
     elseif ins.name == "JMP" then
+      if a > 0 then
+        self:close_upvalues(frame, a - 1)
+      end
       frame.pc = frame.pc + ins.sj
 
     elseif ins.name == "EQ" then
-      if compare_values(r[a], r[ins.b], "EQ") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], r[ins.b], "EQ"), ins.k ~= 0)
 
     elseif ins.name == "LT" then
-      if compare_values(r[a], r[ins.b], "LT") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], r[ins.b], "LT"), ins.k ~= 0)
 
     elseif ins.name == "LE" then
-      if compare_values(r[a], r[ins.b], "LE") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], r[ins.b], "LE"), ins.k ~= 0)
 
     elseif ins.name == "EQK" then
-      if compare_values(r[a], proto.constants[ins.b + 1], "EQ") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], proto.constants[ins.b + 1], "EQ"), ins.k ~= 0)
 
     elseif ins.name == "EQI" then
-      if compare_values(r[a], ins.sb, "EQ") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], ins.sb, "EQ"), ins.k ~= 0)
 
     elseif ins.name == "LTI" then
-      if compare_values(r[a], ins.sb, "LT") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], ins.sb, "LT"), ins.k ~= 0)
 
     elseif ins.name == "LEI" then
-      if compare_values(r[a], ins.sb, "LE") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(r[a], ins.sb, "LE"), ins.k ~= 0)
 
     elseif ins.name == "GTI" then
-      if compare_values(ins.sb, r[a], "LT") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(ins.sb, r[a], "LT"), ins.k ~= 0)
 
     elseif ins.name == "GEI" then
-      if compare_values(ins.sb, r[a], "LE") ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, compare_values(ins.sb, r[a], "LE"), ins.k ~= 0)
 
     elseif ins.name == "TEST" then
-      if (not is_false(r[a])) ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      end
+      self:do_conditional_jump(frame, not is_false(r[a]), ins.k ~= 0)
 
     elseif ins.name == "TESTSET" then
       local value = r[ins.b]
-      if (not is_false(value)) ~= (ins.k ~= 0) then
-        frame.pc = frame.pc + 1
-      else
+      if (not is_false(value)) == (ins.k ~= 0) then
         r[a] = value
+        self:do_conditional_jump(frame, true, true)
+      else
+        frame.pc = frame.pc + 1
       end
 
     elseif ins.name == "CALL" or ins.name == "TAILCALL" then
@@ -1205,6 +1201,7 @@ function VM:execute(closure, ...)
       end
 
     elseif ins.name == "TFORPREP" then
+      frame.to_close[#frame.to_close + 1] = { index = a + 3, value = r[a + 3] }
       frame.pc = frame.pc + ins.bx
 
     elseif ins.name == "TFORCALL" then
@@ -1215,8 +1212,8 @@ function VM:execute(closure, ...)
       frame.top = a + 4 + ins.c
 
     elseif ins.name == "TFORLOOP" then
-      if r[a + 2] ~= nil then
-        r[a] = r[a + 2]
+      if r[a + 4] ~= nil then
+        r[a + 2] = r[a + 4]
         frame.pc = frame.pc - ins.bx
       end
 
@@ -1225,15 +1222,16 @@ function VM:execute(closure, ...)
       if count == 0 then
         count = frame.top - a - 1
       end
-      local start_index = ins.c
+      local last = ins.c + count
       if ins.k ~= 0 then
         local extra = proto.code[frame.pc]
         frame.pc = frame.pc + 1
-        start_index = start_index * 2 ^ 25 + extra.ax
+        last = last + extra.ax * 256
       end
       local t = r[a]
-      for i = 1, count do
-        t[start_index + i] = r[a + i]
+      for i = count, 1, -1 do
+        t[last] = r[a + i]
+        last = last - 1
       end
 
     elseif ins.name == "CLOSURE" then
@@ -1276,7 +1274,9 @@ function M.load(bytecode, globals)
   local main_upcount = proto.main_nups or #proto.upvalues
   for i = 1, max(main_upcount, #proto.upvalues) do
     local desc = proto.upvalues[i]
-    if desc and desc.name == "_ENV" then
+    if i == 1 and main_upcount > 0 and (not desc or desc.name == nil or desc.name == "_ENV") then
+      upvalues[i] = Upvalue.closed(globals or vm.globals)
+    elseif desc and desc.name == "_ENV" then
       upvalues[i] = Upvalue.closed(globals or vm.globals)
     else
       upvalues[i] = Upvalue.closed(nil)
