@@ -125,7 +125,7 @@ def run_demucs(model_name: str, audio_path: Path) -> Path:
     model_out.mkdir(parents=True, exist_ok=True)
 
     command = [
-        'python',
+        sys.executable,
         '-m',
         'demucs.separate',
         '--two-stems',
@@ -141,7 +141,18 @@ def run_demucs(model_name: str, audio_path: Path) -> Path:
 
     print('Running:', ' '.join(command))
     subprocess.run(command, check=True)
-    return model_out / audio_path.stem
+    return model_out
+
+
+def find_demucs_stem(result_dir: Path, stem_name: str) -> Path | None:
+    candidates = sorted(result_dir.rglob(f'{stem_name}.wav'))
+    if not candidates:
+        return None
+
+    # Demucs may add a model-name directory under the output directory, even
+    # when --filename is provided. Prefer the shortest matching path so stale
+    # nested rerun artifacts are less likely to be selected.
+    return min(candidates, key=lambda path: len(path.relative_to(result_dir).parts))
 
 
 model_result_dirs = {}
@@ -240,17 +251,20 @@ instrumental_stems = []
 used_models = []
 
 for model, result_dir in model_result_dirs.items():
-    vocal_path = result_dir / 'vocals.wav'
-    no_vocal_path = result_dir / 'no_vocals.wav'
+    vocal_path = find_demucs_stem(result_dir, 'vocals')
+    no_vocal_path = find_demucs_stem(result_dir, 'no_vocals')
 
-    if not vocal_path.exists():
-        print(f'Skipping {model}: missing vocals.wav')
+    if vocal_path is None:
+        found_wavs = ', '.join(str(path.relative_to(result_dir)) for path in result_dir.rglob('*.wav'))
+        print(f'Skipping {model}: missing vocals.wav under {result_dir}. Found: {found_wavs or "no WAV files"}')
         continue
 
+    print(f'Using {model} vocals from:', vocal_path)
     vocals = match_length(read_audio(vocal_path), target_len)
 
     # Prefer each model's no_vocals stem when present; otherwise use a residual.
-    if no_vocal_path.exists():
+    if no_vocal_path is not None:
+        print(f'Using {model} instrumental from:', no_vocal_path)
         instrumental = match_length(read_audio(no_vocal_path), target_len)
     else:
         instrumental = source_audio - vocals
